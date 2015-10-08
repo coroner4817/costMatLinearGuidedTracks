@@ -230,20 +230,24 @@ for iF1=1:numFeaturesFrame1
         newVel = coord2(iF2,:)-oldCoord(iF1,:);
         
         % angle between new and old velocity
-        velocityAngleMat(iF1, iF2) = real(acos(dot(oldVel, newVel) / (norm(oldVel) * norm(newVel)))*180/pi);
+        velocityAngle = real(acos(dot(oldVel, newVel) / (norm(oldVel) * norm(newVel)))*180/pi);
+        % some angles are NaN because either velocity is a zero vector. Set
+        % these to 0
+        if isnan(velocityAngle)
+            velocityAngle = 0;
+        end        
+        velocityAngleMat(iF1, iF2) = velocityAngle;
         
         % angle between new velocity and the horizontal line
         horizontalAngle = real(acos(dot([1 0], newVel) / (norm([1 0]) * norm(newVel)))*180/pi);
         if horizontalAngle>90,
             horizontalAngle = 180 - horizontalAngle;
-        end
-        
+        end        
         % a lot of angles are NaN because the old velocity is a zero vector. Set
         % these to 0
         if isnan(horizontalAngle)
             horizontalAngle = 0;
         end
-
         horizontalAngleMat(iF1, iF2) = horizontalAngle;
     end
 end
