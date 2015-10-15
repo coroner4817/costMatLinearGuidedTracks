@@ -260,6 +260,61 @@ distCostMat(velocityAngleMat>costMatParam.maxVelocityAngle &...
 distCostMat(horizontalAngleMat>costMatParam.maxHorizontalAngle &...
     distMat>costMatParam.minSpeedAngleFilter) = NaN;
 
+%% Limit search radius according to previous velocity
+% this is optional and only used if brownStdMult > 0
+
+brownStdMult    = costMatParam.brownStdMult;
+
+if brownStdMult > 0
+    useLocalDensity = costMatParam.useLocalDensity;
+    maxSearchRadius = costMatParam.maxSearchRadius;
+
+    if useLocalDensity
+        closestDistScale = 2;
+        maxStdMult = 100;
+    end
+
+    %calculate nearest neighbor distance given feature history
+    frameNum = size(nnDistFeatures,2);
+    tmpNN = max(1,frameNum-nnWindow);
+    nnDistTracks = min(nnDistFeatures(:,tmpNN:end),[],2);
+
+    %determine which features are not first appearances
+    notFirstAppearance = squeeze(kalmanFilterInfoFrame1.noiseVar(1,1,:)) >= 0;
+
+    %get the Kalman standard deviation of all features in frame 1
+    kalmanStd = sqrt(probDim * abs(squeeze(kalmanFilterInfoFrame1.noiseVar(1,1,:))));
+
+    %copy brownStdMult into vector
+    stdMultInd = repmat(brownStdMult,numFeaturesFrame1,1);
+
+    %if local density information is used to expand search radius ...
+    if useLocalDensity
+
+        %divide each feature's nearest neighbor distance/closestDistScale by kalmanStd
+        ratioDist2Std = nnDistTracks./kalmanStd/closestDistScale;
+
+        %make ratios larger than maxStdMult equal to maxStdMult
+        ratioDist2Std(ratioDist2Std > maxStdMult) = maxStdMult;
+
+        %expand search radius multiplication factor if possible
+        stdMultInd = max([stdMultInd ratioDist2Std],[],2);
+
+    end
+
+    %get the search radius of each feature in frame 1 and make sure it falls
+    %within reasonable limits
+    searchRadius = stdMultInd .* kalmanStd;
+    searchRadius((searchRadius>maxSearchRadius)&notFirstAppearance) = maxSearchRadius;
+    searchRadius((searchRadius<minSearchRadius)&notFirstAppearance) = minSearchRadius;
+
+    %replicate the search radius to compare to cost matrix
+    searchRadius = repmat(searchRadius,1,numFeaturesFrame2);
+
+    %assign NaN to costs corresponding to distance > searchRadius
+    distCostMat(trueDistMat > searchRadius) = NaN;
+end
+
 
 %% Amplitude factor
 
