@@ -131,71 +131,484 @@ if gapCloseParam.mergeSplit ~= 0
     return
 end
 
-% get user-set parameters
-tMax = gapCloseParam.timeWindow;
+%get cost matrix parameters
+minSearchRadius = costMatParam.minSearchRadius;
+maxSearchRadius = costMatParam.maxSearchRadius;
+maxSpeed = costMatParam.maxSpeed;
+brownStdMult = costMatParam.brownStdMult;
+linStdMult   = costMatParam.linStdMult;
+linScaling = costMatParam.linScaling;
+timeReachConfL = costMatParam.timeReachConfL;
+sin2AngleMax = (sin(costMatParam.maxAngleVV*pi/180))^2;
+sin2AngleMaxVD = 0.5;
+if isfield(costMatParam,'ampRatioLimit') && ~isempty(costMatParam.ampRatioLimit)
+    minAmpRatio = costMatParam.ampRatioLimit(1);
+    maxAmpRatio = costMatParam.ampRatioLimit(2);
+    useAmp = 1;
+else
+    minAmpRatio = 0;
+    maxAmpRatio = Inf;
+    useAmp = 0;
+end
+if isfield(costMatParam,'gapPenalty') && ~isempty(costMatParam.gapPenalty)
+    gapPenalty = costMatParam.gapPenalty;
+else
+    gapPenalty = 1;
+end
+
+%get gap closing parameters
+timeWindow = gapCloseParam.timeWindow;
+
+%make sure that timeReachConfB is <= timeWindow
+timeReachConfL = min(timeReachConfL,timeWindow);
 
 %find the number of tracks to be linked and the number of frames in the movie
-[nTracks,nFrames] = size(trackedFeatInfo);
-nFrames = nFrames / 8;
+[numTracks,numFrames] = size(trackedFeatInfo);
+numFrames = numFrames / 8;
 
 %list the tracks that start and end in each frame
-tracksPerFrame = repmat(struct('starts',[],'ends',[]),nFrames,1);
-for iFrame = 1 : nFrames
+tracksPerFrame = repmat(struct('starts',[],'ends',[]),numFrames,1);
+for iFrame = 1 : numFrames    
     tracksPerFrame(iFrame).starts = find(trackStartTime == iFrame); %starts
     tracksPerFrame(iFrame).ends = find(trackEndTime == iFrame); %ends
 end
 
-%% Gap closing
+%% Pre-processing
 
-% extract feature positions and velocity components
-px=trackedFeatInfo(:,1:8:end);
-py=trackedFeatInfo(:,2:8:end);
-vx=diff(px,1,2);
-vy=diff(py,1,2);
-
-% TRACK STARTS
-trackStartPxyVxy = zeros(nTracks,4);
-% x and y coordinates of the track's first point
-trackStartPxyVxy(:,1)=cell2mat(arrayfun(@(i) px(i,find(~isnan(px(i,:)),1,'first')),[1:nTracks]','UniformOutput',0));
-trackStartPxyVxy(:,2)=cell2mat(arrayfun(@(i) py(i,find(~isnan(py(i,:)),1,'first')),[1:nTracks]','UniformOutput',0));
-% average of first three velocity vectors (made from last 4 points
-% on track, if that many exist), x and y components
-trackStartPxyVxy(:,3)=cell2mat(arrayfun(@(i) mean(vx(i,find(~isnan(vx(i,:)),3,'first'))),[1:nTracks]','UniformOutput',0));
-trackStartPxyVxy(:,4)=cell2mat(arrayfun(@(i) mean(vy(i,find(~isnan(vy(i,:)),3,'first'))),[1:nTracks]','UniformOutput',0));
-
-% TRACK ENDS
-trackEndPxyVxy = zeros(nTracks,4);
-% x and y coordinates of the track's last point
-trackEndPxyVxy(:,1)=cell2mat(arrayfun(@(i) px(i,find(~isnan(px(i,:)),1,'last')),[1:nTracks]','UniformOutput',0));
-trackEndPxyVxy(:,2)=cell2mat(arrayfun(@(i) py(i,find(~isnan(py(i,:)),1,'last')),[1:nTracks]','UniformOutput',0));
-% average of last three velocity vectors (made from last 4 points
-% on track, if that many exist), x and y components
-trackEndPxyVxy(:,3)=cell2mat(arrayfun(@(i) mean(vx(i,find(~isnan(vx(i,:)),3,'last'))),[1:nTracks]','UniformOutput',0));
-trackEndPxyVxy(:,4)=cell2mat(arrayfun(@(i) mean(vy(i,find(~isnan(vy(i,:)),3,'last'))),[1:nTracks]','UniformOutput',0));
-
-% get velocity components for each track from kalman filter (very similar to trackEndVxy)
-xyzVel=cell2mat(arrayfun(@(iTrack) kalmanFilterInfo(trackEndTime(iTrack))...
-    .stateVec(trackedFeatIndx(iTrack,trackEndTime(iTrack)),probDim+1:2*probDim),...
-    [1:nTracks]','UniformOutput',0));
-
-trackEndSpeed=sqrt(sum(xyzVel.^2,2));
-vMax=prctile(trackEndSpeed,95);
-vMed=median(trackEndSpeed);
-
-% get start and end frames for each track
-sFrameAll=zeros(nTracks,1);
-eFrameAll=zeros(nTracks,1);
-for iFrame=1:nFrames
-    sFrameAll(tracksPerFrame(iFrame).starts)=iFrame;
-    eFrameAll(tracksPerFrame(iFrame).ends)=iFrame;
+%get the x,y-coordinates and amplitudes at the starts of tracks
+coordStart = zeros(numTracks,probDim);
+ampStart   = zeros(numTracks,1);
+for iTrack = 1 : numTracks
+    coordStart(iTrack,:) = full(trackedFeatInfo(iTrack,...
+        (trackStartTime(iTrack)-1)*8+1:(trackStartTime(iTrack)-1)*8+probDim));
+    ampStart(iTrack) = full(trackedFeatInfo(iTrack,(trackStartTime(iTrack)-1)*8+4));
 end
 
-% initialize matrices for pair indices and cost components
-indx1 = zeros(10*nTracks,1);
-indx2 = zeros(10*nTracks,1);
-costComponents  = zeros(10*nTracks,5);
+%get the x,y-coordinates and amplitudes at the ends of tracks
+coordEnd = zeros(numTracks,probDim);
+ampEnd   = zeros(numTracks,1);
+for iTrack = 1 : numTracks
+    coordEnd(iTrack,:) = full(trackedFeatInfo(iTrack,...
+        (trackEndTime(iTrack)-1)*8+1:(trackEndTime(iTrack)-1)*8+probDim));
+    ampEnd(iTrack) = full(trackedFeatInfo(iTrack,(trackEndTime(iTrack)-1)*8+4));
+end
 
-linkCount = 1;
+%% from estimTrackTypeParamRDS
+
+%get number of tracks from initial linking and number of frames
+[numTracksLink,numFrames] = size(trackedFeatIndx);
+
+%reserve memory for output variables
+xyzVelS = zeros(numTracksLink,probDim);
+xyzVelE = zeros(numTracksLink,probDim);
+noiseStd = zeros(numTracksLink,1);
+trackMeanDispMag = NaN(numTracksLink,1);
+
+%get the start times, end times and lifetimes of all tracks
+trackSEL = getTrackSEL(trackedFeatInfo);
+trackStartTime = trackSEL(:,1);
+trackEndTime   = trackSEL(:,2);
+
+%go over all tracks
+for iTrack = 1 : numTracksLink
+    
+    %get current track's coordinates
+    currentTrack = (reshape(trackedFeatInfo(iTrack,:)',8,[]))';
+    currentTrack = currentTrack(:,1:probDim);
+    currentTrack = full(currentTrack(trackStartTime(iTrack):trackEndTime(iTrack),:));
+    
+    %calculate the track's mean displacement
+    if size(currentTrack,1) > 1
+        trackMeanDispMag(iTrack) = mean(sqrt(sum(diff(currentTrack,1,1).^2,2)));
+    end
+    
+    %assign velocity
+    xyzVelS(iTrack,:) = kalmanFilterInfo(trackStartTime(...
+        iTrack)).stateVec(trackedFeatIndx(iTrack,...
+        trackStartTime(iTrack)),probDim+1:2*probDim);
+    xyzVelE(iTrack,:) = kalmanFilterInfo(trackEndTime(...
+        iTrack)).stateVec(trackedFeatIndx(iTrack,...
+        trackEndTime(iTrack)),probDim+1:2*probDim);
+
+    %assign noise std
+    noiseStd(iTrack) = sqrt( abs( kalmanFilterInfo(trackEndTime(...
+        iTrack)).noiseVar(1,1,trackedFeatIndx(iTrack,...
+        trackEndTime(iTrack))) ) );           
+end
+
+%%
+
+%calculate the average mean displacement for all tracks, to assign to
+%tracks that have no mean displacement estimate
+meanDispAllTracks = nanmean(trackMeanDispMag);
+
+
+%% from getSearchRegionRDS
+
+%reserve memory for output
+longVecSAll  = zeros(probDim,timeWindow,numTracks);
+longVecEAll  = zeros(probDim,timeWindow,numTracks);
+longRedVecSAll  = zeros(probDim,timeWindow,numTracks);
+longRedVecEAll  = zeros(probDim,timeWindow,numTracks);
+shortVecSAll = zeros(probDim,timeWindow,numTracks);
+shortVecEAll = zeros(probDim,timeWindow,numTracks);
+
+%define square root of "problem dimension" to avoid calculating it many times
+sqrtDim = sqrt(probDim);
+
+%put time scaling of forward linear motion in a vector
+timeScalingLin = [(1:timeReachConfL).^linScaling(1) ...
+    (timeReachConfL)^linScaling(1) * (2:timeWindow-timeReachConfL+1).^linScaling(2)];
+for iTrack = 1 : numTracks
+          
+    %get velocity, its magnitude and "direction of motion"
+    %at track start
+    velDriftS = xyzVelS(iTrack,:)';
+    velMagS = sqrt(velDriftS' * velDriftS);
+    directionMotionS = velDriftS / velMagS;
+    %at track end
+    velDriftE = xyzVelE(iTrack,:)';
+    velMagE = sqrt(velDriftE' * velDriftE);
+    directionMotionE = velDriftE / velMagE;
+
+    %obtain vector(s) perpendicular to direction of motion
+    %at track start
+    perpendicularS = [-directionMotionS(2) directionMotionS(1)]';
+    %at track end
+    perpendicularE = [-directionMotionE(2) directionMotionE(1)]';
+
+    %calculate the expected displacement due to drift for all time
+    %gaps
+    %at track start
+    dispDrift1FS = velMagS * timeScalingLin;
+    %at track end
+    dispDrift1FE = velMagE * timeScalingLin;
+
+    %calculate the expected displacement along x (= along y, [z]) due to
+    %brownian motion for all time gaps
+    dispBrown1 = brownStd(iTrack) * timeScalingBrown;
+
+    %copy brownStdMult into vector that might be modified using
+    %local density
+    brownStdMultModS = brownStdMult'; %for track start
+    brownStdMultModE = brownStdMult'; %for track end
+
+    %determine the "long vectors" of the search rectangles for all time
+    %gaps when direction of motion is continued
+    %at track start
+    longVec1FS = ...
+        (repmat((linStdMult' .* dispDrift1FS),probDim,1) + ...
+        repmat((brownStdMult' .* dispBrown1 * sqrtDim),probDim,1)) .* ...
+        repmat(directionMotionS,1,timeWindow);
+    longVecFSMag = sqrt((diag(longVec1FS' * longVec1FS))');  %magnitude
+    longVecFSDir = longVec1FS ./ repmat(longVecFSMag,probDim,1); %direction
+    %at track end
+    longVec1FE = ...
+        (repmat((linStdMult' .* dispDrift1FE),probDim,1) + ...
+        repmat((brownStdMult' .* dispBrown1 * sqrtDim),probDim,1)) .* ...
+        repmat(directionMotionE,1,timeWindow);
+    longVecFEMag = sqrt((diag(longVec1FE' * longVec1FE))');  %magnitude
+    longVecFEDir = longVec1FE ./ repmat(longVecFEMag,probDim,1); %direction
+
+    %determine the "long vectors" of the search rectangles for all time
+    %gaps when direction of motion is reversed
+    %at start
+    longVec1BS = ...
+        repmat((brownStdMultModS .* dispBrown1 * sqrtDim),probDim,1) .* ...
+        repmat(directionMotionS,1,timeWindow);
+    longVecBSMag = sqrt((diag(longVec1BS' * longVec1BS))');  %magnitude
+    longVecBSDir = longVec1BS ./ repmat(longVecBSMag,probDim,1); %direction
+    %at end
+    longVec1BE = ...
+        repmat((brownStdMultModE .* dispBrown1 * sqrtDim),probDim,1) .* ...
+        repmat(directionMotionE,1,timeWindow);
+    longVecBEMag = sqrt((diag(longVec1BE' * longVec1BE))');  %magnitude
+    longVecBEDir = longVec1BE ./ repmat(longVecBEMag,probDim,1); %direction
+
+    %determine the "short vectors"
+    %at track starts
+    shortVecS1 = ...
+        repmat((brownStdMultModS .* dispBrown1 * sqrtDim),probDim,1) .* ...
+        repmat(perpendicularS,1,timeWindow);
+    shortVecSMag = sqrt((diag(shortVecS1' * shortVecS1))');  %magnitude
+    shortVecSDir = shortVecS1 ./ repmat(shortVecSMag,probDim,1); %direction
+    %at track ends
+    shortVecE1 = ...
+        repmat((brownStdMultModE .* dispBrown1 * sqrtDim),probDim,1) .* ...
+        repmat(perpendicularE,1,timeWindow);
+    shortVecEMag = sqrt((diag(shortVecE1' * shortVecE1))');  %magnitude
+    shortVecEDir = shortVecE1 ./ repmat(shortVecEMag,probDim,1); %direction
+
+    %make sure that "long vectors" are longer than minimum allowed
+    %at start
+    longVecSMagTmp = max([longVecFSMag;repmat(minSearchRadius,1,timeWindow)]); %compare to minimum
+    longVec1FS = repmat(longVecSMagTmp,probDim,1) .* longVecFSDir; %new long vector
+    %at end
+    longVecEMagTmp = max([longVecFEMag;repmat(minSearchRadius,1,timeWindow)]); %compare to minimum
+    longVec1FE = repmat(longVecEMagTmp,probDim,1) .* longVecFEDir; %new long vector
+
+    %make sure that backwards "long vectors" are
+    %within allowed range
+    %at start
+    longVecSMagTmp = max([longVecBSMag;repmat(minSearchRadius,1,timeWindow)]); %compare to minimum
+    longVecSMagTmp = min([longVecSMagTmp;maxSearchRadius]); %compare to maximum
+    longVec1BS = repmat(longVecSMagTmp,probDim,1) .* longVecBSDir; %new long vector
+    %at end
+    longVecEMagTmp = max([longVecBEMag;repmat(minSearchRadius,1,timeWindow)]); %compare to minimum
+    longVecEMagTmp = min([longVecEMagTmp;maxSearchRadius]); %compare to maximum
+    longVec1BE = repmat(longVecEMagTmp,probDim,1) .* longVecBEDir; %new long vector
+
+    %make sure that "short vectors" at track starts are within
+    %allowed range
+    shortVecSMagTmp = max([shortVecSMag;repmat(minSearchRadius,1,timeWindow)]); %compare to minimum
+    shortVecSMagTmp = min([shortVecSMagTmp;maxSearchRadius]); %compare to maximum
+    shortVecS1 = repmat(shortVecSMagTmp,probDim,1) .* shortVecSDir; %new short vector
+
+    %make sure that "short vectors" at track ends are within allowed
+    %range
+    shortVecEMagTmp = max([shortVecEMag;repmat(minSearchRadius,1,timeWindow)]); %compare to minimum
+    shortVecEMagTmp = min([shortVecEMagTmp;maxSearchRadius]); %compare to maximum
+    shortVecE1 = repmat(shortVecEMagTmp,probDim,1) .* shortVecEDir; %new short vector
+
+    %save values for this track
+    longVecSAll(:,:,iTrack) = longVec1FS;
+    longVecEAll(:,:,iTrack) = longVec1FE;
+    shortVecSAll(:,:,iTrack) = shortVecS1;
+    shortVecEAll(:,:,iTrack) = shortVecE1;
+
+    longRedVecSAll(:,:,iTrack) = longVec1BS;
+    longRedVecEAll(:,:,iTrack) = longVec1BE;
+
+end %(for iTrack = 1 : numTracks)
+
+%% Gap closing
+
+%find all pairs of ends and starts that can potentially be linked
+%determine this by looking at time gaps between ends and starts
+%and by looking at the distance between pairs
+indxEnd2 = [];
+indxStart2 = [];
+
+%go over all frames until the one before last
+for iFrame = 1 : numFrames - 1
+    
+    %find tracks that end in this frame
+    endsToConsider = tracksPerFrame(iFrame).ends;
+    
+    for jFrame = iFrame + 1 : min(iFrame+timeWindow,numFrames)
+        
+        %find tracks that start in this frame
+        startsToConsider = tracksPerFrame(jFrame).starts;
+        
+        %calculate the distance between ends and starts
+        dispMat2 = createDistanceMatrix(coordEnd(endsToConsider,:),...
+            coordStart(startsToConsider,:));
+
+        tmpFrame = jFrame-iFrame;
+        [indxEnd3,indxStart3] = find(dispMat2 <= (maxSpeed * tmpFrame));
+
+        if size(indxEnd3,1) == 1
+            indxEnd3 = indxEnd3';
+            indxStart3 = indxStart3';
+        end
+
+        %add them to the list of possible pairs
+        indxEnd2 = [indxEnd2; endsToConsider(indxEnd3)];
+        indxStart2 = [indxStart2; startsToConsider(indxStart3)];
+                
+    end %(for jFrame = iFrame + 1 : iFrame + timeWindow)
+    
+end %(for iFrame = 1 : numFrames)
+
+%get total number of pairs
+numPairs = length(indxEnd2);
+
+%clear variables from memory
+clear dispMat2 maxDispAllowed
+
+%reserve memory for cost matrix vectors
+indx1 = zeros(numPairs,1); %row number in cost matrix
+indx2 = zeros(numPairs,1); %column number in cost matrix
+cost  = zeros(numPairs,1); %cost value
+
+%put time scaling of linear motion in a vector
+% timeScalingLin = ones(timeWindow,1);
+timeScalingLin = [(1:timeReachConfL).^linScaling(1) ...
+    (timeReachConfL)^linScaling(1) * (2:timeWindow-timeReachConfL+1).^linScaling(2)];
+
+% timeGapAll = [];
+% timeGapAll2 = [];
+
+%go over all possible pairs of starts and ends
+for iPair = 1 : numPairs
+    
+    %get indices of starts and ends
+    iStart = indxStart2(iPair);
+    iEnd = indxEnd2(iPair);
+    
+    %determine the time gap between them
+    timeGap = trackStartTime(iStart) - trackEndTime(iEnd);
+    
+    %calculate the vector connecting the end of track iEnd to the
+    %start of track iStart and compute its magnitude
+    dispVec = coordStart(iStart,:) - coordEnd(iEnd,:);
+    dispVecMag = norm(dispVec);
+
+    %determine whether the connecting vector is parallel or anti-parallel
+    %to the tracks' directions of motion
+    parallelToS = (dispVec * xyzVelS(iStart,:,1)') > 0;
+    parallelToE = (dispVec * xyzVelE(iEnd,:,1)') > 0;
+    
+    %determine the search area of track iStart
+    if ~parallelToS
+        longVecS = longRedVecSAll(:,timeGap,iStart);
+    else
+        longVecS = longVecSAll(:,timeGap,iStart);
+    end
+    shortVecS = shortVecSAll(:,timeGap,iStart);
+        
+    %determine the search area of track iEnd
+    if ~parallelToE
+        longVecE = longRedVecEAll(:,timeGap,iEnd);
+    else
+        longVecE = longVecEAll(:,timeGap,iEnd);
+    end
+    shortVecE = shortVecEAll(:,timeGap,iEnd);
+
+    %calculate the magnitudes of the long and short search vectors
+    %of both start and end
+    longVecMagS = norm(longVecS);
+    shortVecMagS = norm(shortVecS);
+    longVecMagE = norm(longVecE);
+    shortVecMagE = norm(shortVecE);
+
+    %project the connecting vector onto the long and short vectors
+    %of track iStart and take absolute value
+    projStartLong = abs(dispVec * longVecS) / longVecMagS;
+    projStartShort = abs(dispVec * shortVecS) / shortVecMagS;
+    
+    %project the connecting vector onto the long and short vectors
+    %of track iEnd and take absolute value
+    projEndLong = abs(dispVec * longVecE) / longVecMagE;
+    projEndShort = abs(dispVec * shortVecE) / shortVecMagE;
+    
+    %calculate the vector connecting the centers of the two tracks
+    %     cen2cenVec = trackCenter(iStart,:) - trackCenter(iEnd,:);
+    cen2cenVec = dispVec;
+    cen2cenVecMag = sqrt(cen2cenVec * cen2cenVec');
+              
+    %calculate the cosine of the angle between velocity
+    %vectors
+    cosAngle = longVecE' * longVecS / (longVecMagE * longVecMagS);
+
+    %calculate the square sine of the angle between velocity vectors
+    sin2Angle = 1 - cosAngle^2;
+
+    %calculate the square sine of the angle between each
+    %motion direction vector and the center-to-center vector
+    sin2AngleE = 1 - (cen2cenVec * longVecE / ...
+        (longVecMagE * cen2cenVecMag))^2;
+    sin2AngleS = 1 - (cen2cenVec * longVecS / ...
+        (longVecMagS * cen2cenVecMag))^2;
+
+    %check whether 
+    %(1) the end of track iEnd is within the search
+    %rectangle of the start of track iStart,
+    %(2) the start of track iStart is within the search
+    %rectangle of the end of track iEnd,
+    %(3) the angle between the two directions of motion
+    %is within acceptable bounds, and 
+    %(4) the angle between directions of motion and vector
+    %connecting end and start is within acceptable bounds
+    possibleLink = ...
+        ((projEndLong <= longVecMagE) && ...
+        (projEndShort <= shortVecMagE)) && ...
+        ...
+        ((projStartLong <= longVecMagS) && ...
+        (projStartShort <= shortVecMagS)) && ...
+        ...
+        (sin2Angle <= sin2AngleMax) && ...
+        ...
+        ((sin2AngleE <= sin2AngleMaxVD) && ...
+        (sin2AngleS <= sin2AngleMaxVD));
+
+    %only allow links between tracks moving in the same direction
+   possibleLink = possibleLink && (cosAngle >= 0);
+    
+    %if this is a possible link ...
+    if possibleLink
+        
+        %calculate the average displacement for the two tracks combined
+        meanDispTrack1 = trackMeanDispMag(iStart);
+        meanDispTrack1(isnan(meanDispTrack1)) = meanDispAllTracks;
+        meanDispTrack2 = trackMeanDispMag(iEnd);
+        meanDispTrack2(isnan(meanDispTrack2)) = meanDispAllTracks;
+        meanDisp2Tracks = mean([meanDispTrack1 meanDispTrack2]);
+        
+        %calculate the cost of linking
+        dispVecMag2 = dispVecMag ^ 2;
+        cost12 = dispVecMag2 * (1 + mean([sin2Angle sin2AngleE sin2AngleS])) ...
+            / (timeScalingLin(timeGap) * meanDisp2Tracks)^2;
+        
+        %if the lifetime consideration does not make this link impossible
+        if isfinite(cost12)
+            
+            %penalize cost for gap length considerations
+            cost12 = cost12 * gapPenalty^(timeGap-1);
+            
+            %add this cost to the list of costs
+            cost(iPair) = cost12;
+            
+            %specify the location of this pair in the cost matrix
+            indx1(iPair) = iEnd; %row number
+            indx2(iPair) = iStart; %column number
+            
+        end
+        
+    end %(if possibleLink)
+    
+end %(for iPair = 1 : numPairs)
+
+%keep only pairs that turned out to be possible
+possiblePairs = find(indx1 ~= 0);
+indx1 = indx1(possiblePairs);
+indx2 = indx2(possiblePairs);
+cost  = cost(possiblePairs);
+
+
+%% Append cost matrix to allow births and deaths ...
+
+%determine the cost of birth and death
+tmp = (costMat~=0);
+numPotAssignRow = full(sum(tmp,2));
+numPotAssignCol = full(sum(tmp)');
+numPotAssignColAll = sum(numPotAssignCol);
+numPotAssignRowAll = sum(numPotAssignRow);
+numPartCol = length(numPotAssignCol) * 2;
+extraCol = (numPotAssignColAll-numPartCol)/numPotAssignColAll;
+numPartRow = length(numPotAssignRow) * 2;
+extraRow = (numPotAssignRowAll-numPartRow)/numPotAssignRowAll;
+prctile2use = min(100, 100 - mean([extraRow extraCol])*100);
+
+costBD = 1.05*prctile(cost(:),prctile2use);
+
+%get the cost for the lower right block
+% costLR = min(min(min(costMat))-1,-1);
+costLR = costBD;
+
+%create cost matrix that allows for births and deaths
+% costMat = [costMat ... %costs for links (gap closing + merge/split)
+%     spdiags([costBD*ones(numTracks,1); altCostSplit],0,numEndSplit,numEndSplit); ... %costs for death
+%     spdiags([costBD*ones(numTracks,1); altCostMerge],0,numStartMerge,numStartMerge) ...  %costs for birth
+%     sparse(indx2,indx1,costLR*ones(length(indx1),1),numStartMerge,numEndSplit)]; %dummy costs to complete the cost matrix
+
+costMat = [costMat ... %costs for links (gap closing + merge/split)
+    spdiags(costBD*ones(numTracks+numSplit,1),0,numEndSplit,numEndSplit); ... %costs for death
+    spdiags(costBD*ones(numTracks+numMerge,1),0,numStartMerge,numStartMerge) ...  %costs for birth
+    sparse(indx2,indx1,costLR*ones(length(indx1),1),numStartMerge,numEndSplit)]; %dummy costs to complete the cost matrix
+
+%determine the nonlinkMarker
+nonlinkMarker = min(floor(full(min(min(costMat))))-5,-5);
     
     
 end
