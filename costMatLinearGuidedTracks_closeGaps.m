@@ -423,9 +423,6 @@ end %(for iFrame = 1 : numFrames)
 %get total number of pairs
 numPairs = length(indxEnd2);
 
-%clear variables from memory
-clear dispMat2 maxDispAllowed
-
 %reserve memory for cost matrix vectors
 indx1 = zeros(numPairs,1); %row number in cost matrix
 indx2 = zeros(numPairs,1); %column number in cost matrix
@@ -436,8 +433,6 @@ cost  = zeros(numPairs,1); %cost value
 timeScalingLin = [(1:timeReachConfL).^linScaling(1) ...
     (timeReachConfL)^linScaling(1) * (2:timeWindow-timeReachConfL+1).^linScaling(2)];
 
-% timeGapAll = [];
-% timeGapAll2 = [];
 
 %go over all possible pairs of starts and ends
 for iPair = 1 : numPairs
@@ -491,12 +486,7 @@ for iPair = 1 : numPairs
     %of track iEnd and take absolute value
     projEndLong = abs(dispVec * longVecE) / longVecMagE;
     projEndShort = abs(dispVec * shortVecE) / shortVecMagE;
-    
-    %calculate the vector connecting the centers of the two tracks
-    %     cen2cenVec = trackCenter(iStart,:) - trackCenter(iEnd,:);
-    cen2cenVec = dispVec;
-    cen2cenVecMag = sqrt(cen2cenVec * cen2cenVec');
-              
+                  
     %calculate the cosine of the angle between velocity
     %vectors
     cosAngle = longVecE' * longVecS / (longVecMagE * longVecMagS);
@@ -506,10 +496,10 @@ for iPair = 1 : numPairs
 
     %calculate the square sine of the angle between each
     %motion direction vector and the center-to-center vector
-    sin2AngleE = 1 - (cen2cenVec * longVecE / ...
-        (longVecMagE * cen2cenVecMag))^2;
-    sin2AngleS = 1 - (cen2cenVec * longVecS / ...
-        (longVecMagS * cen2cenVecMag))^2;
+    sin2AngleE = 1 - (dispVec * longVecE / ...
+        (longVecMagE * dispVecMag))^2;
+    sin2AngleS = 1 - (dispVec * longVecS / ...
+        (longVecMagS * dispVecMag))^2;
 
     %check whether 
     %(1) the end of track iEnd is within the search
