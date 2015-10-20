@@ -320,11 +320,11 @@ end
 
 % limit search / distCostMatrix according to maxVelocityAngle, given a certain speed
 distCostMat(velocityAngleMat>costMatParam.maxVelocityAngle &...
-    distMat>costMatParam.minSpeedAngleFilter) = NaN;
+    distCostMat>costMatParam.minSpeedAngleFilter) = NaN;
 
 % limit search / distCostMatrix according to maxHorizontalAngle, given a certain speed
 distCostMat(horizontalAngleMat>costMatParam.maxHorizontalAngle &...
-    distMat>costMatParam.minSpeedAngleFilter) = NaN;
+    distCostMat>costMatParam.minSpeedAngleFilter) = NaN;
 
 
 %% Amplitude factor
@@ -346,7 +346,7 @@ ampRatioMat(ampRatioMat>costMatParam.maxAmpRatio) = NaN;
 %square the cost matrix to make the cost = distance squared
 distCostMat = distCostMat.^2;
 % normalize
-distCostMat = distCostMat./maxSpeed^2;
+distCostMat = distCostMat./costMatParam.maxSpeed^2;
 ampCost = ampRatioMat./costMatParam.maxAmpRatio;
 
 % add using factors

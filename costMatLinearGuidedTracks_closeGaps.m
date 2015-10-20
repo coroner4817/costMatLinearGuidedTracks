@@ -136,20 +136,16 @@ minSearchRadius = costMatParam.minSearchRadius;
 maxSearchRadius = costMatParam.maxSearchRadius;
 maxSpeed = costMatParam.maxSpeed;
 brownStdMult = costMatParam.brownStdMult;
+brownScaling = costMatParam.brownScaling;
+timeReachConfB = costMatParam.timeReachConfB;
 linStdMult   = costMatParam.linStdMult;
 linScaling = costMatParam.linScaling;
 timeReachConfL = costMatParam.timeReachConfL;
-sin2AngleMax = (sin(costMatParam.maxAngleVV*pi/180))^2;
-sin2AngleMaxVD = 0.5;
-if isfield(costMatParam,'ampRatioLimit') && ~isempty(costMatParam.ampRatioLimit)
-    minAmpRatio = costMatParam.ampRatioLimit(1);
-    maxAmpRatio = costMatParam.ampRatioLimit(2);
-    useAmp = 1;
-else
-    minAmpRatio = 0;
-    maxAmpRatio = Inf;
-    useAmp = 0;
-end
+maxVelocityAngle = costMatParam.maxVelocityAngle;
+maxHorizontalAngle = costMatParam.maxHorizontalAngle;
+maxAmpRatio = costMatParam.maxAmpRatio;
+minSpeedAngleFilter  = costMatParam.minSpeedAngleFilter;
+
 if isfield(costMatParam,'gapPenalty') && ~isempty(costMatParam.gapPenalty)
     gapPenalty = costMatParam.gapPenalty;
 else
@@ -159,7 +155,7 @@ end
 %get gap closing parameters
 timeWindow = gapCloseParam.timeWindow;
 
-%make sure that timeReachConfB is <= timeWindow
+%make sure that timeReachConfL is <= timeWindow
 timeReachConfL = min(timeReachConfL,timeWindow);
 
 %find the number of tracks to be linked and the number of frames in the movie
@@ -203,6 +199,7 @@ xyzVelS = zeros(numTracksLink,probDim);
 xyzVelE = zeros(numTracksLink,probDim);
 noiseStd = zeros(numTracksLink,1);
 trackMeanDispMag = NaN(numTracksLink,1);
+meanAmps = zeros(numTracksLink,2);
 
 %get the start times, end times and lifetimes of all tracks
 trackSEL = getTrackSEL(trackedFeatInfo);
@@ -214,12 +211,12 @@ for iTrack = 1 : numTracksLink
     
     %get current track's coordinates
     currentTrack = (reshape(trackedFeatInfo(iTrack,:)',8,[]))';
-    currentTrack = currentTrack(:,1:probDim);
-    currentTrack = full(currentTrack(trackStartTime(iTrack):trackEndTime(iTrack),:));
+    currentTrackCoords = currentTrack(:,1:probDim);
+    currentTrackCoords = full(currentTrackCoords(trackStartTime(iTrack):trackEndTime(iTrack),:));
     
     %calculate the track's mean displacement
-    if size(currentTrack,1) > 1
-        trackMeanDispMag(iTrack) = mean(sqrt(sum(diff(currentTrack,1,1).^2,2)));
+    if size(currentTrackCoords,1) > 1
+        trackMeanDispMag(iTrack) = mean(sqrt(sum(diff(currentTrackCoords,1,1).^2,2)));
     end
     
     %assign velocity
@@ -233,7 +230,12 @@ for iTrack = 1 : numTracksLink
     %assign noise std
     noiseStd(iTrack) = sqrt( abs( kalmanFilterInfo(trackEndTime(...
         iTrack)).noiseVar(1,1,trackedFeatIndx(iTrack,...
-        trackEndTime(iTrack))) ) );           
+        trackEndTime(iTrack))) ) );   
+    
+    %get amplitudes
+    meanAmps(iTrack,1) = nanmean(currentTrack(:, 4));
+    meanAmps(iTrack,2) = nanstd(currentTrack(:, 4));
+    
 end
 
 %%
@@ -259,6 +261,20 @@ sqrtDim = sqrt(probDim);
 %put time scaling of forward linear motion in a vector
 timeScalingLin = [(1:timeReachConfL).^linScaling(1) ...
     (timeReachConfL)^linScaling(1) * (2:timeWindow-timeReachConfL+1).^linScaling(2)];
+
+%put time scaling of Brownian motion in a vector
+timeScalingBrown = [(1:timeReachConfB).^brownScaling(1) ...
+    (timeReachConfB)^brownScaling(1) * (2:timeWindow-timeReachConfB+1).^brownScaling(2)];
+
+%scale maxSearchRadius like Brownian motion (it's only imposed on the
+%Brownian aspect of tracks)
+maxSearchRadius = maxSearchRadius * timeScalingBrown;
+
+%put time scaling of Brownian motion in a vector
+timeScalingBrown = ones(timeWindow,1);
+timeScalingBrown = [(1:timeReachConfB).^brownScaling(1) ...
+    (timeReachConfB)^brownScaling(1) * (2:timeWindow-timeReachConfB+1).^brownScaling(2)];
+
 for iTrack = 1 : numTracks
           
     %get velocity, its magnitude and "direction of motion"
@@ -286,7 +302,7 @@ for iTrack = 1 : numTracks
 
     %calculate the expected displacement along x (= along y, [z]) due to
     %brownian motion for all time gaps
-    dispBrown1 = brownStd(iTrack) * timeScalingBrown;
+    dispBrown1 = noiseStd(iTrack) * timeScalingBrown;
 
     %copy brownStdMult into vector that might be modified using
     %local density
@@ -490,26 +506,39 @@ for iPair = 1 : numPairs
     %calculate the cosine of the angle between velocity
     %vectors
     cosAngle = longVecE' * longVecS / (longVecMagE * longVecMagS);
-
-    %calculate the square sine of the angle between velocity vectors
-    sin2Angle = 1 - cosAngle^2;
-
-    %calculate the square sine of the angle between each
-    %motion direction vector and the center-to-center vector
-    sin2AngleE = 1 - (dispVec * longVecE / ...
-        (longVecMagE * dispVecMag))^2;
-    sin2AngleS = 1 - (dispVec * longVecS / ...
-        (longVecMagS * dispVecMag))^2;
-
+    
+    %calculate the actual angles as used in linking
+    velAngleS = vvAngle(dispVec, longVecS);
+    if isnan(velAngleS)
+        velAngleS = 0;
+    end   
+    velAngleE = vvAngle(dispVec, longVecE);
+    if isnan(velAngleE)
+        velAngleE = 0;
+    end
+    
+    %calculate the horizontal angle of the connecting vector
+    horizontalAngle = vvAngle([1 0], dispVec);
+    if horizontalAngle>90,
+        horizontalAngle = 180 - horizontalAngle;
+    end
+    if isnan(horizontalAngle)
+        horizontalAngle = 0;
+    end
+    
+    %calculate amplitude ratio
+    ampRatio = meanAmps(iStart,1) / meanAmps(iEnd, 1);
+    if ampRatio < 1
+        ampRatio = 1 / ampRatio;
+    end
+    
     %check whether 
     %(1) the end of track iEnd is within the search
     %rectangle of the start of track iStart,
     %(2) the start of track iStart is within the search
     %rectangle of the end of track iEnd,
-    %(3) the angle between the two directions of motion
-    %is within acceptable bounds, and 
-    %(4) the angle between directions of motion and vector
-    %connecting end and start is within acceptable bounds
+    %(3) all angles are within acceptable bounds, and 
+    %(4) the amplitude difference is acceptable
     possibleLink = ...
         ((projEndLong <= longVecMagE) && ...
         (projEndShort <= shortVecMagE)) && ...
@@ -517,13 +546,14 @@ for iPair = 1 : numPairs
         ((projStartLong <= longVecMagS) && ...
         (projStartShort <= shortVecMagS)) && ...
         ...
-        (sin2Angle <= sin2AngleMax) && ...
+        (((cosAngle >= 0) && ... %same direction
+        (velAngleS <= maxVelocityAngle) && ...
+        (velAngleE <= maxVelocityAngle) && ...
+        (horizontalAngle <= maxHorizontalAngle)) || ...
+        (dispVecMag <= minSpeedAngleFilter))&& ... % overrides all angle conditions
         ...
-        ((sin2AngleE <= sin2AngleMaxVD) && ...
-        (sin2AngleS <= sin2AngleMaxVD));
+        (ampRatio < maxAmpRatio);
 
-    %only allow links between tracks moving in the same direction
-   possibleLink = possibleLink && (cosAngle >= 0);
     
     %if this is a possible link ...
     if possibleLink
@@ -568,6 +598,9 @@ cost  = cost(possiblePairs);
 
 %% Append cost matrix to allow births and deaths ...
 
+%create cost matrix without births and deaths
+costMat = sparse(indx1,indx2,cost,numTracks,numTracks);
+
 %determine the cost of birth and death
 tmp = (costMat~=0);
 numPotAssignRow = full(sum(tmp,2));
@@ -593,9 +626,9 @@ costLR = costBD;
 %     sparse(indx2,indx1,costLR*ones(length(indx1),1),numStartMerge,numEndSplit)]; %dummy costs to complete the cost matrix
 
 costMat = [costMat ... %costs for links (gap closing + merge/split)
-    spdiags(costBD*ones(numTracks+numSplit,1),0,numEndSplit,numEndSplit); ... %costs for death
-    spdiags(costBD*ones(numTracks+numMerge,1),0,numStartMerge,numStartMerge) ...  %costs for birth
-    sparse(indx2,indx1,costLR*ones(length(indx1),1),numStartMerge,numEndSplit)]; %dummy costs to complete the cost matrix
+    spdiags(costBD*ones(numTracks,1),0,numTracks,numTracks); ... %costs for death
+    spdiags(costBD*ones(numTracks,1),0,numTracks,numTracks) ...  %costs for birth
+    sparse(indx2,indx1,costLR*ones(length(indx1),1),numTracks,numTracks)]; %dummy costs to complete the cost matrix
 
 %determine the nonlinkMarker
 nonlinkMarker = min(floor(full(min(min(costMat))))-5,-5);
