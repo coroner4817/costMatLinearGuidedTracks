@@ -2,11 +2,10 @@ function [costMat,propagationScheme,kalmanFilterInfoFrame2,nonlinkMarker,...
     errFlag] = costMatLinearGuidedTracks_link(movieInfo,kalmanFilterInfoFrame1,...
     costMatParam,nnDistFeatures,probDim,prevCost,featLifetime,...
     trackedFeatureIndx,currentFrame)
-
 %
 % costMatLinearGuidedTracks_link: cost matrix for guided ('on rails') linear motion with stopping.
-% To be used with u-track (http://lccb.hms.harvard.edu/software.html). This code is
-% influenced by plusTipCostMatLinearMotionLink by Khuloud Jaqaman.
+% To be used with u-track (http://lccb.hms.harvard.edu/software.html). This code is heavily
+% influenced by plusTipCostMatLinearMotionLink.m by Khuloud Jaqaman.
 % 
 % Fabian Peters 2015 
 %
@@ -21,6 +20,7 @@ function [costMat,propagationScheme,kalmanFilterInfoFrame2,nonlinkMarker,...
 %             .num                : Number of features in each frame.
 %             .nnDist             : Distance from each feature to its nearest
 %                                   neighbor. Not needed at the moment.
+%
 %      kalmanFilterInfoFrame1 : Structure with at least the following fields:
 %             .stateVec           : Kalman filter state vector for each
 %                                   feature in 1st frame.
@@ -28,29 +28,35 @@ function [costMat,propagationScheme,kalmanFilterInfoFrame2,nonlinkMarker,...
 %                                   for each feature in 1st frame.
 %             .noiseVar           : Variance of state noise for each
 %                                   feature in 1st frame.
+%
 %      costMatParam           : Structure with fields:
 %             .linearMotion       : 1 to propagate enforcing a linear motion
 %                                   model (no stopping), 0 otherwise.
 %             .minSearchRadius    : Minimum allowed search radius for brownStdMult search window
 %             .maxSearchRadius    : Maximum allowed search radius for brownStdMult search window
-%             .brownStdMult       : Factor multiplying Brownian
-%                                   displacement std to get search radius. Set to 0 to disable the
-%                                   search window ( max speed as only limit)
+%             .brownStdMult       : Somewhat unfortunately named. Factor multiplied with noise
+%                                   (std) from kalman filter to get search radius.
+%                                   Overruled by maxSpeed.
 %             .useLocalDensity    : Logical variable indicating whether to use
 %                                   local density in brownStdMult search radius estimation.
 %             .nnWindow           : Number of past frames for calculating
 %                                   nearest neighbor distance in brownStdMult search radius estimation.
-%             .maxSpeed           : Maximum displacement between two frames
-%             .maxYdist           : Maximum Y displacement between two frames
-%             .maxVelocityAngle             : Lifetime cumulative density function.
-%                                   Column vector, specifying cdf for
-%                                   lifetime = 0 to movie length.
-%                                   Enter [] if cdf is not to be used.
-%                                   Optional. Default: [].
-%             .maxHorizontalAngle : Logical variable indicating whether to use
-%                                   local density in search radius estimation.
-%             .maxAmpRatio        : Number of past frames for calculating
-%                                   nearest neighbor distance.
+%             .maxSpeed           : Maximum displacement between two frames.
+%             .maxVelocityAngle   : Max angle between current velocity (as indicated by kalman
+%                                   filter) and vector connecting current and new position. Only
+%                                   applies if dist > minSpeedAngleFilter.
+%             .maxHorizontalAngle : Max deviation of vector connecting current and new position from
+%                                   the horizontal. By definition < 90deg. Only applies if
+%                                   dist > minSpeedAngleFilter.
+%             .maxYdist           : Maximum Y displacement between two frames, applies also if
+%                                   dist < minSpeedAngleFilter.
+%             .minSpeedAngleFilter: Min distance in px from which maxVelocityAngle and
+%                                   maxHorizontalAngle are applied. Helps to ignore small drifts. 
+%             .maxAmpRatio        : Max acceptable amp ratio for the linking of two particles.
+%             .distFact,ampFact   : weight of distance and amp difference in calculation of total
+%                                   cost. Total cost is calculated as
+%                                   distFact*(distance/maxSpeed)^2 + ampFact*(ampCost/maxAmpRatio)
+%
 %      nnDistFeatures         : Matrix of nearest neighbor distances of
 %                               features in first frame as well as of
 %                               features in previous frames that they are
@@ -61,7 +67,6 @@ function [costMat,propagationScheme,kalmanFilterInfoFrame2,nonlinkMarker,...
 %                               first frame belong to.  NOT USED.
 %      trackedFeatureIndx     : The matrix of feature index connectivity up
 %                               to current frame.  NOT USED.
-%                               Currently not used in this cost function.
 %      currentFrame           : Current frame that is being linked to the
 %                               next frame.
 %
@@ -83,15 +88,7 @@ function [costMat,propagationScheme,kalmanFilterInfoFrame2,nonlinkMarker,...
 %       errFlag               : 0 if function executes normally, 1 otherwise.
 %
 
-%% Output
-
-costMat = [];
-propagationScheme = [];
-kalmanFilterInfoFrame2 = [];
-nonlinkMarker = [];
-errFlag = 0;
-
-%% Input
+%% initial checks
 
 %check whether correct number of input arguments was used
 if nargin ~= nargin('costMatLinearGuidedTracks_link')
@@ -106,6 +103,32 @@ if probDim ~= 2
     errFlag  = 1;
     return
 end
+
+
+%% Output
+
+costMat = [];
+propagationScheme = [];
+kalmanFilterInfoFrame2 = [];
+nonlinkMarker = [];
+errFlag = 0;
+
+%% Input
+
+linearMotion = costMatParam.linearMotion;
+maxSpeed = costMatParam.maxSpeed;
+maxYdist = costMatParam.maxYdist;
+brownStdMult = costMatParam.brownStdMult;
+useLocalDensity = costMatParam.useLocalDensity;
+nnWindow = costMatParam.nnWindow;
+minSearchRadius = costMatParam.minSearchRadius;
+maxSearchRadius = costMatParam.maxSearchRadius;
+maxVelocityAngle = costMatParam.maxVelocityAngle;
+minSpeedAngleFilter = costMatParam.minSpeedAngleFilter;
+maxHorizontalAngle = costMatParam.maxHorizontalAngle;
+maxAmpRatio = costMatParam.maxAmpRatio;
+distFact = costMatParam.distFact;
+ampFact = costMatParam.ampFact;
 
 %extract the two frames of interest from movieInfo
 movieInfo = movieInfo(currentFrame:currentFrame+1);
@@ -124,7 +147,7 @@ numSchemes = 2;
 vecSize = 2 * probDim;
 
 %construct transition matrices
-if costMatParam.linearMotion
+if linearMotion
     transMat(:,:,1) = eye(vecSize) + diag(ones(probDim,1),probDim); %forward drift transition matrix
     transMat(:,:,2) = eye(vecSize) + diag(ones(probDim,1),probDim); %forward drift transition matrix
 else
@@ -210,69 +233,59 @@ end
 
 % calculate distances between features and their true previous positions
 trueDistMat = createDistanceMatrix(oldCoord,coord2);
-distCostMat(trueDistMat > costMatParam.maxSpeed) = NaN;
+distCostMat(trueDistMat > maxSpeed) = NaN;
 
 % calculate distance in y direction only
 yDistMat = createDistanceMatrix([zeros(size(oldCoord,1),1) oldCoord(:,2)], ...
     [zeros(size(coord2,1),1) coord2(:,2)]);
-distCostMat(yDistMat > costMatParam.maxYdist) = NaN;
+distCostMat(yDistMat > maxYdist) = NaN;
 
 %% Limit search radius according to previous velocity
-% this is optional and only used if brownStdMult > 0
 
-brownStdMult    = costMatParam.brownStdMult;
-
-if brownStdMult > 0
-    useLocalDensity = costMatParam.useLocalDensity;
-    nnWindow = costMatParam.nnWindow;
-    minSearchRadius = costMatParam.minSearchRadius;
-    maxSearchRadius = costMatParam.maxSearchRadius;
-
-    if useLocalDensity
-        closestDistScale = 2;
-        maxStdMult = 100;
-    end
-
-    %calculate nearest neighbor distance given feature history
-    frameNum = size(nnDistFeatures,2);
-    tmpNN = max(1,frameNum-nnWindow);
-    nnDistTracks = min(nnDistFeatures(:,tmpNN:end),[],2);
-
-    %determine which features are not first appearances
-    notFirstAppearance = squeeze(kalmanFilterInfoFrame1.noiseVar(1,1,:)) >= 0;
-
-    %get the Kalman standard deviation of all features in frame 1
-    kalmanStd = sqrt(probDim * abs(squeeze(kalmanFilterInfoFrame1.noiseVar(1,1,:))));
-
-    %copy brownStdMult into vector
-    stdMultInd = repmat(brownStdMult,numFeaturesFrame1,1);
-
-    %if local density information is used to expand search radius ...
-    if useLocalDensity
-
-        %divide each feature's nearest neighbor distance/closestDistScale by kalmanStd
-        ratioDist2Std = nnDistTracks./kalmanStd/closestDistScale;
-
-        %make ratios larger than maxStdMult equal to maxStdMult
-        ratioDist2Std(ratioDist2Std > maxStdMult) = maxStdMult;
-
-        %expand search radius multiplication factor if possible
-        stdMultInd = max([stdMultInd ratioDist2Std],[],2);
-
-    end
-
-    %get the search radius of each feature in frame 1 and make sure it falls
-    %within reasonable limits
-    searchRadius = stdMultInd .* kalmanStd;
-    searchRadius((searchRadius>maxSearchRadius)&notFirstAppearance) = maxSearchRadius;
-    searchRadius((searchRadius<minSearchRadius)&notFirstAppearance) = minSearchRadius;
-
-    %replicate the search radius to compare to cost matrix
-    searchRadius = repmat(searchRadius,1,numFeaturesFrame2);
-
-    %assign NaN to costs corresponding to distance > searchRadius
-    distCostMat(trueDistMat > searchRadius) = NaN;
+if useLocalDensity
+    closestDistScale = 2;
+    maxStdMult = 100;
 end
+
+%calculate nearest neighbor distance given feature history
+frameNum = size(nnDistFeatures,2);
+tmpNN = max(1,frameNum-nnWindow);
+nnDistTracks = min(nnDistFeatures(:,tmpNN:end),[],2);
+
+%determine which features are not first appearances
+notFirstAppearance = squeeze(kalmanFilterInfoFrame1.noiseVar(1,1,:)) >= 0;
+
+%get the Kalman standard deviation of all features in frame 1
+kalmanStd = sqrt(probDim * abs(squeeze(kalmanFilterInfoFrame1.noiseVar(1,1,:))));
+
+%copy brownStdMult into vector
+stdMultInd = repmat(brownStdMult,numFeaturesFrame1,1);
+
+%if local density information is used to expand search radius ...
+if useLocalDensity
+
+    %divide each feature's nearest neighbor distance/closestDistScale by kalmanStd
+    ratioDist2Std = nnDistTracks./kalmanStd/closestDistScale;
+
+    %make ratios larger than maxStdMult equal to maxStdMult
+    ratioDist2Std(ratioDist2Std > maxStdMult) = maxStdMult;
+
+    %expand search radius multiplication factor if possible
+    stdMultInd = max([stdMultInd ratioDist2Std],[],2);
+
+end
+
+%get the search radius of each feature in frame 1 and make sure it falls
+%within reasonable limits
+searchRadius = stdMultInd .* kalmanStd;
+searchRadius((searchRadius>maxSearchRadius)&notFirstAppearance) = maxSearchRadius;
+searchRadius((searchRadius<minSearchRadius)&notFirstAppearance) = minSearchRadius;
+
+%replicate the search radius to compare to cost matrix
+searchRadius = repmat(searchRadius,1,numFeaturesFrame2);
+
+%assign NaN to costs corresponding to distance > searchRadius
+distCostMat(trueDistMat > searchRadius) = NaN;
 
 %% apply velocity angle limits
 % these are only applied if the particle is moving at a minimum speed in order to avoid breaking
@@ -319,12 +332,12 @@ for iF1=1:numFeaturesFrame1
 end
 
 % limit search / distCostMatrix according to maxVelocityAngle, given a certain speed
-distCostMat(velocityAngleMat>costMatParam.maxVelocityAngle &...
-    distCostMat>costMatParam.minSpeedAngleFilter) = NaN;
+distCostMat(velocityAngleMat > maxVelocityAngle &...
+    distCostMat > minSpeedAngleFilter) = NaN;
 
 % limit search / distCostMatrix according to maxHorizontalAngle, given a certain speed
-distCostMat(horizontalAngleMat>costMatParam.maxHorizontalAngle &...
-    distCostMat>costMatParam.minSpeedAngleFilter) = NaN;
+distCostMat(horizontalAngleMat > maxHorizontalAngle &...
+    distCostMat > minSpeedAngleFilter) = NaN;
 
 
 %% Amplitude factor
@@ -338,7 +351,7 @@ ampRatioMat = repmat(amp1,1,numFeaturesFrame2)./repmat(amp2',numFeaturesFrame1,1
 ampRatioMat(ampRatioMat<1) = 1./ampRatioMat(ampRatioMat<1);
 
 % exclude overly big differences
-ampRatioMat(ampRatioMat>costMatParam.maxAmpRatio) = NaN;
+ampRatioMat(ampRatioMat > maxAmpRatio) = NaN;
 
 
 %% combine costs
@@ -346,13 +359,10 @@ ampRatioMat(ampRatioMat>costMatParam.maxAmpRatio) = NaN;
 %square the cost matrix to make the cost = distance squared
 distCostMat = distCostMat.^2;
 % normalize
-distCostMat = distCostMat./costMatParam.maxSpeed^2;
-ampCost = ampRatioMat./costMatParam.maxAmpRatio;
+distCostMat = distCostMat/maxSpeed^2;
+ampCost = ampRatioMat/maxAmpRatio;
 
 % add using factors
-distFact = costMatParam.distFact;
-ampFact = costMatParam.ampFact;
-
 costMat = distFact*distCostMat + ampFact*ampCost;
 
 

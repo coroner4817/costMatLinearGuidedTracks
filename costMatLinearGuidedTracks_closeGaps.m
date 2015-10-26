@@ -1,12 +1,11 @@
 function [costMat,nonlinkMarker,indxMerge,numMerge,indxSplit,numSplit,errFlag] = ...
         costMatLinearGuidedTracks_closeGaps(trackedFeatInfo,trackedFeatIndx,trackStartTime,...
         trackEndTime,costMatParam,gapCloseParam,kalmanFilterInfo,nnDistLinkedFeat,probDim,movieInfo)
-
 %
 % To be used with u-track (http://lccb.hms.harvard.edu/software.html).
-% costMatLinearGuidedTracks_closeGaps provides a cost matrix for closing gaps and capturing merges/splits
-% in tracks linked by costMatLinearGuidedTracks_link. It is based on costMatRandomDirectedSwitchingMotionLink
-% by Khuloud Jaqaman and plusTipCostMatCloseGaps by Kathryn Applegate
+% costMatLinearGuidedTracks_closeGaps provides a cost matrix for closing gaps in tracks linked by
+% costMatLinearGuidedTracks_link. It is based on costMatRandomDirectedSwitchingMotionLink.m
+% by Khuloud Jaqaman and plusTipCostMatCloseGaps.m by Kathryn Applegate
 % 
 % Fabian Peters 2015 
 %
@@ -27,45 +26,66 @@ function [costMat,nonlinkMarker,indxMerge,numMerge,indxSplit,numSplit,errFlag] =
 %                        is preceded by zeros.
 %       trackStartTime : Starting time of all tracks.
 %       trackEndTime   : Ending time of all tracks.
+%
 %       costMatParam   : Structure containing variables needed for cost
 %                        calculation. Contains the fields:
-%          .fluctRad             : Size in pixels of tube radius around track
-%                                trajectory. The search region in the backward
-%                                direction will expand out from the track at
-%                                the final point.  This value also determines
-%                                the search radius around the final point
-%                                wherein any candidates will be considered for
-%                                forward linking, even if they fall slightly
-%                                behind the point.  This ensures that tracks
-%                                starting from a fluctuation during a pause
-%                                will still be picked up as candidates for
-%                                pause.
-%          .maxFAngle          : Max angle in degrees allowed between the end
-%                                track's final velocity vector and the
-%                                displacement vector between end and start.
-%                                Also the max angle between the end and start
-%                                tracks themselves.
-%          .maxBAngle          : Angle in degrees used to expand backward
-%                                search region, giving a distance-dependent
-%                                criterion for how far a start track
-%                                can be from the lattice to be considered a
-%                                candidate for linking. THIS IS CURRENTLY A
-%                                HARDWIRED PARAMETER
-%          .backVelMultFactor : Muliplication factor of max growth speed used
-%                               to define candidate search area in the
-%                               backward direction.
+%             .minSearchRadius: Minimum allowed search radius (in pixels).
+%             .maxSearchRadius: Maximum allowed search radius (in pixels).
+%                               This value is the maximum search radius
+%                               between two consecutive frames as when
+%                               linking between consecutive frames. It will
+%                               be calculated for different time gaps
+%                               based on the scaling factor determined by .brownScaling and
+%                               timeReachConfB.
+%             .maxSpeed       : Maximum displacement between two frames.
+%             .brownStdMult   : Somewhat unfortunately named. Factor multiplied with noise
+%                               (std) from kalman filter to get search radius. Vector with
+%                               number of entries equal to gapCloseParam.timeWindow.
+%             .linStdMult     : Factor multiplying linear motion std to get
+%                               search radius. Vector with number of entries
+%                               equal to gapCloseParam.timeWindow.
+%             .brownScaling   : Power with which the kalman noise part of the
+%                               search radius scales with time. It has 2
+%                               elements, the first indicating the power
+%                               before timeReachConfB (see below) and the
+%                               second indicating the power after
+%                               timeReachConfB.
+%             .linScaling     : Power with which the linear part of the
+%                               search radius scales with time. It has 2
+%                               elements, the first indicating the power
+%                               before timeReachConfL (see below) and the
+%                               second indicating the power after
+%                               timeReachConfL
+%             .timeReachConfB : Time gap for reaching confinement for
+%                               2D Brownian motion. For smaller time gaps,
+%                               expected displacement increases with
+%                               (time gap)^brownScaling. For larger time gaps,
+%                               expected displacement increases slowly, with
+%                               (time gap)^0.01.
+%             .timeReachConfL : Time gap for reaching confinement for
+%                               linear motion. Time scaling similar to
+%                               timeReachConfB above.
+%             .maxVelocityAngle   : Max angle between current velocity (as indicated by kalman
+%                                   filter) and vector connecting current and new position. Only
+%                                   applies if dist > minSpeedAngleFilter.
+%             .maxHorizontalAngle : Max deviation of vector connecting current and new position from
+%                                   the horizontal. By definition < 90deg. Only applies if
+%                                   dist > minSpeedAngleFilter.
+%             .minSpeedAngleFilter: Min distance in px from which maxVelocityAngle and
+%                                   maxHorizontalAngle are applied. Helps to ignore small drifts.
+%             .maxAmpRatio        : Max acceptable amp ratio for the linking of two particles.
+%
 %       gapCloseParam  : Structure containing variables needed for gap closing.
 %                        Contains the fields:
 %             .timeWindow : Largest time gap between the end of a track and the
-%                           beginning of another that could be connected to
-%                           it.
-%             .mergeSplit : Logical variable with value 1 if the merging
-%                           and splitting of trajectories are to be consided;
-%                           and 0 if merging and splitting are not allowed.
-%                           For MT tracking, there are no merges/splits, so
-%                           this should be 0.
-%       kalmanFilterInfo: Structure array with number of entries equal to
-%                         number of frames in movie. Contains the fields:
+%                           beginning of another that could be connected to it.
+%             .tolerance  : Relative change in number of tracks in two
+%                           consecutive gap closing steps below which
+%                           iteration stops.
+%             .mergeSplit : Not supported. Must be 0.
+%
+%       kalmanFilterInfo:Structure array with number of entries equal to
+%                        number of frames in movie. Contains the fields:
 %             .stateVec   : Kalman filter state vector for each
 %                           feature in frame.
 %             .stateCov   : Kalman filter state covariance matrix
@@ -97,18 +117,7 @@ function [costMat,nonlinkMarker,indxMerge,numMerge,indxSplit,numSplit,errFlag] =
 %       errFlag       : 0 if function executes normally, 1 otherwise.
 %
 
-%% Output
-
-costMat = [];
-nonlinkMarker = [];
-indxMerge = [];
-numMerge = [];
-indxSplit = [];
-numSplit = [];
-errFlag = 0;
-
-
-%% Input
+%% initial checks
 
 %check whether correct number of input arguments was used
 if nargin ~= nargin('costMatLinearGuidedTracks_closeGaps')
@@ -131,6 +140,20 @@ if gapCloseParam.mergeSplit ~= 0
     return
 end
 
+
+%% Output
+
+costMat = [];
+nonlinkMarker = [];
+indxMerge = [];
+numMerge = [];
+indxSplit = [];
+numSplit = [];
+errFlag = 0;
+
+
+%% Input
+
 %get cost matrix parameters
 minSearchRadius = costMatParam.minSearchRadius;
 maxSearchRadius = costMatParam.maxSearchRadius;
@@ -138,7 +161,7 @@ maxSpeed = costMatParam.maxSpeed;
 brownStdMult = costMatParam.brownStdMult;
 brownScaling = costMatParam.brownScaling;
 timeReachConfB = costMatParam.timeReachConfB;
-linStdMult   = costMatParam.linStdMult;
+linStdMult = costMatParam.linStdMult;
 linScaling = costMatParam.linScaling;
 timeReachConfL = costMatParam.timeReachConfL;
 maxVelocityAngle = costMatParam.maxVelocityAngle;
@@ -269,11 +292,6 @@ timeScalingBrown = [(1:timeReachConfB).^brownScaling(1) ...
 %scale maxSearchRadius like Brownian motion (it's only imposed on the
 %Brownian aspect of tracks)
 maxSearchRadius = maxSearchRadius * timeScalingBrown;
-
-%put time scaling of Brownian motion in a vector
-timeScalingBrown = ones(timeWindow,1);
-timeScalingBrown = [(1:timeReachConfB).^brownScaling(1) ...
-    (timeReachConfB)^brownScaling(1) * (2:timeWindow-timeReachConfB+1).^brownScaling(2)];
 
 for iTrack = 1 : numTracks
           
@@ -506,6 +524,16 @@ for iPair = 1 : numPairs
     %calculate the cosine of the angle between velocity
     %vectors
     cosAngle = longVecE' * longVecS / (longVecMagE * longVecMagS);
+    
+    %calculate the square sine of the angle between velocity vectors
+    sin2Angle = 1 - cosAngle^2;
+
+    %calculate the square sine of the angle between each
+    %motion direction vector and the center-to-center vector
+    sin2AngleE = 1 - (dispVec * longVecE / ...
+        (longVecMagE * dispVecMag))^2;
+    sin2AngleS = 1 - (dispVec * longVecS / ...
+        (longVecMagS * dispVecMag))^2;
     
     %calculate the actual angles as used in linking
     velAngleS = vvAngle(dispVec, longVecS);
