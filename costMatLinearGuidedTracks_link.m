@@ -48,8 +48,8 @@ function [costMat,propagationScheme,kalmanFilterInfoFrame2,nonlinkMarker,...
 %             .maxHorizontalAngle : Max deviation of vector connecting current and new position from
 %                                   the horizontal. By definition < 90deg. Only applies if
 %                                   dist > minSpeedAngleFilter.
-%             .maxYdist           : Maximum Y displacement between two frames, applies also if
-%                                   dist < minSpeedAngleFilter.
+%             .maxYdistSlow       : Max Y displacement between two frames if dist < minSpeedAngleFilter.
+%             .maxYdistFast       : Max Y displacement between two frames if dist >= minSpeedAngleFilter.
 %             .minSpeedAngleFilter: Min distance in px from which maxVelocityAngle and
 %                                   maxHorizontalAngle are applied. Helps to ignore small drifts. 
 %             .maxAmpRatio        : Max acceptable amp ratio for the linking of two particles.
@@ -127,7 +127,8 @@ errFlag = 0;
 
 linearMotion = costMatParam.linearMotion;
 maxSpeed = costMatParam.maxSpeed;
-maxYdist = costMatParam.maxYdist;
+maxYdistFast = costMatParam.maxYdistFast;
+maxYdistSlow = costMatParam.maxYdistSlow;
 brownStdMult = costMatParam.brownStdMult;
 useLocalDensity = costMatParam.useLocalDensity;
 nnWindow = costMatParam.nnWindow;
@@ -248,7 +249,10 @@ distCostMat(trueDistMat > maxSpeed) = NaN;
 % calculate distance in y direction only
 yDistMat = createDistanceMatrix([zeros(size(oldCoord,1),1) oldCoord(:,2)], ...
     [zeros(size(coord2,1),1) coord2(:,2)]);
-distCostMat(yDistMat > maxYdist) = NaN;
+
+% limit possible links according to max y distance
+distCostMat((distCostMat < minSpeedAngleFilter) & (yDistMat > maxYdistSlow)) = NaN;
+distCostMat((distCostMat >= minSpeedAngleFilter) & (yDistMat > maxYdistFast)) = NaN;
 
 %% Limit search radius according to previous velocity
 
@@ -342,12 +346,12 @@ for iF1=1:numFeaturesFrame1
 end
 
 % limit search / distCostMatrix according to maxVelocityAngle, given a certain speed
-distCostMat(velocityAngleMat > maxVelocityAngle &...
-    distCostMat > minSpeedAngleFilter) = NaN;
+distCostMat((velocityAngleMat > maxVelocityAngle) &...
+    (distCostMat >= minSpeedAngleFilter)) = NaN;
 
 % limit search / distCostMatrix according to maxHorizontalAngle, given a certain speed
-distCostMat(horizontalAngleMat > maxHorizontalAngle &...
-    distCostMat > minSpeedAngleFilter) = NaN;
+distCostMat((horizontalAngleMat > maxHorizontalAngle) &...
+    (distCostMat >= minSpeedAngleFilter)) = NaN;
 
 
 %% Amplitude factor
