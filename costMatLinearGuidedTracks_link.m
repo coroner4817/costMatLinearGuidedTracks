@@ -45,9 +45,6 @@ function [costMat,propagationScheme,kalmanFilterInfoFrame2,nonlinkMarker,...
 %             .maxVelocityAngle   : Max angle between current velocity (as indicated by kalman
 %                                   filter) and vector connecting current and new position. Only
 %                                   applies if dist > minSpeedAngleFilter.
-%             .maxHorizontalAngle : Max deviation of vector connecting current and new position from
-%                                   the horizontal. By definition < 90deg. Only applies if
-%                                   dist > minSpeedAngleFilter.
 %             .maxYdistSlow       : Max Y displacement between two frames if dist < minSpeedAngleFilter.
 %             .maxYdistFast       : Max Y displacement between two frames if dist >= minSpeedAngleFilter.
 %             .minSpeedAngleFilter: Min distance in px from which maxVelocityAngle and
@@ -136,7 +133,6 @@ minSearchRadius = costMatParam.minSearchRadius;
 maxSearchRadius = costMatParam.maxSearchRadius;
 maxVelocityAngle = costMatParam.maxVelocityAngle;
 minSpeedAngleFilter = costMatParam.minSpeedAngleFilter;
-maxHorizontalAngle = costMatParam.maxHorizontalAngle;
 maxAmpRatio = costMatParam.maxAmpRatio;
 distFact = costMatParam.distFact;
 ampFact = costMatParam.ampFact;
@@ -318,12 +314,12 @@ for iF1=1:numFeaturesFrame1
         % velocity of the connection tested
         newVel = coord2(iF2,:)-oldCoord(iF1,:);
         
-        % angle between new and old velocity
-        velocityAngle = vvAngle(oldVel, newVel);
         % some angles are NaN because either velocity is a zero vector. Set
         % these to 0
-        if isnan(velocityAngle)
+        if norm(newVel)==0 || norm(oldVel)==0
             velocityAngle = 0;
+        else
+            velocityAngle = vvAngle(oldVel, newVel);    
         end        
         velocityAngleMat(iF1, iF2) = velocityAngle;
         
@@ -341,13 +337,29 @@ for iF1=1:numFeaturesFrame1
     end
 end
 
-% limit search / distCostMatrix according to maxVelocityAngle, given a certain speed
-distCostMat((velocityAngleMat > maxVelocityAngle) &...
-    (distCostMat >= minSpeedAngleFilter)) = NaN;
+% treat angle limits differently depending on whether the particle in frame 1 is  a new appearance
+% or already part of a track
+notFirstAppearanceMatrix = repmat(notFirstAppearance, [1 numFeaturesFrame2]);
 
-% limit search / distCostMatrix according to maxHorizontalAngle, given a certain speed
-distCostMat((horizontalAngleMat > maxHorizontalAngle) &...
-    (distCostMat >= minSpeedAngleFilter)) = NaN;
+% ignore angles for particles which were previously slower than the angle requirement
+oldVelocityMag = zeros(size(oldVelocity,1),1);
+for iV=1:numel(oldVelocityMag)
+    oldVelocityMag(iV) = norm(oldVelocity(iV,:));
+end
+oldVelocityMagMatrix = repmat(oldVelocityMag, [1 numFeaturesFrame2]);
+
+% limit search / distCostMatrix according to maxVelocityAngle, given that the particle from frame 1 
+% has sufficient velocity history
+distCostMat((velocityAngleMat > maxVelocityAngle) &...
+    (distCostMat >= minSpeedAngleFilter) &...
+    (notFirstAppearanceMatrix == 1) &...
+    (oldVelocityMagMatrix >= minSpeedAngleFilter)) = NaN;
+
+% limit new particles to maxVelocityAngle relative to the horizontal line
+distCostMat((horizontalAngleMat > maxVelocityAngle) &...
+    (distCostMat >= minSpeedAngleFilter) &...
+    ((notFirstAppearanceMatrix == 0) |...
+    (oldVelocityMagMatrix < minSpeedAngleFilter))) = NaN;
 
 
 %% Amplitude factor
