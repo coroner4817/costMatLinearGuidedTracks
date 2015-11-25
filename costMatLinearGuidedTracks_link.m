@@ -144,10 +144,6 @@ ampFact = costMatParam.ampFact;
 %extract the two frames of interest from movieInfo
 movieInfo = movieInfo(currentFrame:currentFrame+1);
 
-%find features that appear and remove negative signs
-kalmanFilterInfoFrame1.noiseVar = abs(kalmanFilterInfoFrame1.noiseVar);
-
-
 %% Motion propagation
 
 % number of propagation schemes used:
@@ -189,7 +185,7 @@ for iFeature = 1 : numFeaturesFrame1
     %get state vector and its covariance matrix of feature in 1st frame
     stateOld = kalmanFilterInfoFrame1.stateVec(iFeature,:)';
     stateCovOld = kalmanFilterInfoFrame1.stateCov(:,:,iFeature);
-    noiseVar = kalmanFilterInfoFrame1.noiseVar(:,:,iFeature);
+    noiseVar = abs(kalmanFilterInfoFrame1.noiseVar(:,:,iFeature));
     
     oldVelocity(iFeature,:) = stateOld(end-1:end);
     oldCoord(iFeature,:) = stateOld(1:2);
