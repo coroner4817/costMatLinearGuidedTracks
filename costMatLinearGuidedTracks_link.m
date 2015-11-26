@@ -243,8 +243,8 @@ yDistMat = createDistanceMatrix([zeros(size(oldCoord,1),1) oldCoord(:,2)], ...
     [zeros(size(coord2,1),1) coord2(:,2)]);
 
 % limit possible links according to max y distance
-distCostMat((distCostMat < minSpeedAngleFilter) & (yDistMat > maxYdistSlow)) = NaN;
-distCostMat((distCostMat >= minSpeedAngleFilter) & (yDistMat > maxYdistFast)) = NaN;
+distCostMat((trueDistMat < minSpeedAngleFilter) & (yDistMat > maxYdistSlow)) = NaN;
+distCostMat((trueDistMat >= minSpeedAngleFilter) & (yDistMat > maxYdistFast)) = NaN;
 
 %% Limit search radius according to previous velocity
 
@@ -291,7 +291,7 @@ searchRadius((searchRadius<minSearchRadius)&notFirstAppearance) = minSearchRadiu
 searchRadius = repmat(searchRadius,1,numFeaturesFrame2);
 
 %assign NaN to costs corresponding to distance > searchRadius
-distCostMat(trueDistMat > searchRadius) = NaN;
+distCostMat(distCostMat > searchRadius) = NaN;
 
 %% apply velocity angle limits
 % these are only applied if the particle is moving at a minimum speed in order to avoid breaking
@@ -351,13 +351,13 @@ oldVelocityMagMatrix = repmat(oldVelocityMag, [1 numFeaturesFrame2]);
 % limit search / distCostMatrix according to maxVelocityAngle, given that the particle from frame 1 
 % has sufficient velocity history
 distCostMat((velocityAngleMat > maxVelocityAngle) &...
-    (distCostMat >= minSpeedAngleFilter) &...
+    (trueDistMat >= minSpeedAngleFilter) &...
     (notFirstAppearanceMatrix == 1) &...
     (oldVelocityMagMatrix >= minSpeedAngleFilter)) = NaN;
 
 % limit new particles to maxVelocityAngle relative to the horizontal line
 distCostMat((horizontalAngleMat > maxVelocityAngle) &...
-    (distCostMat >= minSpeedAngleFilter) &...
+    (trueDistMat >= minSpeedAngleFilter) &...
     ((notFirstAppearanceMatrix == 0) |...
     (oldVelocityMagMatrix < minSpeedAngleFilter))) = NaN;
 

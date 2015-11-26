@@ -65,12 +65,10 @@ function [costMat,nonlinkMarker,indxMerge,numMerge,indxSplit,numSplit,errFlag] =
 %             .timeReachConfL : Time gap for reaching confinement for
 %                               linear motion. Time scaling similar to
 %                               timeReachConfB above.
-%             .maxVelocityAngle   : Max angle between current velocity (as indicated by kalman
+%             .maxVelocityAngle : Max angle between current velocity (as indicated by kalman
 %                                   filter) and vector connecting current and new position. Only
 %                                   applies if dist > minSpeedAngleFilter.
-%             .maxHorizontalAngle : Max deviation of vector connecting current and new position from
-%                                   the horizontal. By definition < 90deg. Only applies if
-%                                   dist > minSpeedAngleFilter.
+%             .maxYdist :       Max y distance between start and end.
 %             .minSpeedAngleFilter: Min distance in px from which maxVelocityAngle and
 %                                   maxHorizontalAngle are applied. Helps to ignore small drifts.
 %             .maxAmpRatio        : Max acceptable amp ratio for the linking of two particles.
@@ -176,7 +174,7 @@ linStdMult = costMatParam.linStdMult;
 linScaling = costMatParam.linScaling;
 timeReachConfL = costMatParam.timeReachConfL;
 maxVelocityAngle = costMatParam.maxVelocityAngle;
-maxHorizontalAngle = costMatParam.maxHorizontalAngle;
+maxYdist = costMatParam.maxYdist;
 maxAmpRatio = costMatParam.maxAmpRatio;
 minSpeedAngleFilter  = costMatParam.minSpeedAngleFilter;
 
@@ -493,6 +491,9 @@ for iPair = 1 : numPairs
     %start of track iStart and compute its magnitude
     dispVec = coordStart(iStart,:) - coordEnd(iEnd,:);
     dispVecMag = norm(dispVec);
+    
+    % get y distance
+    yDist = abs(dispVec(2));
 
     %determine whether the connecting vector is parallel or anti-parallel
     %to the tracks' directions of motion
@@ -557,13 +558,13 @@ for iPair = 1 : numPairs
     end
     
     %calculate the horizontal angle of the connecting vector
-    horizontalAngle = vvAngle([1 0], dispVec);
-    if horizontalAngle>90,
-        horizontalAngle = 180 - horizontalAngle;
-    end
-    if isnan(horizontalAngle)
-        horizontalAngle = 0;
-    end
+%     horizontalAngle = vvAngle([1 0], dispVec);
+%     if horizontalAngle>90,
+%         horizontalAngle = 180 - horizontalAngle;
+%     end
+%     if isnan(horizontalAngle)
+%         horizontalAngle = 0;
+%     end
     
     %calculate amplitude ratio
     ampRatio = meanAmps(iStart,1) / meanAmps(iEnd, 1);
@@ -587,9 +588,10 @@ for iPair = 1 : numPairs
         ...
         (((cosAngle >= 0) && ... %same direction
         (velAngleS <= maxVelocityAngle) && ...
-        (velAngleE <= maxVelocityAngle) && ...
-        (horizontalAngle <= maxHorizontalAngle)) || ...
+        (velAngleE <= maxVelocityAngle)) || ...
         (dispVecMag <= minSpeedAngleFilter))&& ... % overrides all angle conditions
+        ...
+        (yDist <= maxYdist) && ...
         ...
         (ampRatio < maxAmpRatio);
 
